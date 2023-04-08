@@ -1,0 +1,546 @@
+---
+title: "MSDS456 Final Project"
+author: "Daniel deCoen"
+date: '2023-02-26'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r FINAL PROJECT}
+install.packages("pacman")
+install.packages("tsibble")
+install.packages("forecast")
+install.packages("baseballr")
+install.packages("zoo")
+library(dplyr)
+library(pacman)
+library(tsibble) # Make sure tsibble is imported before lubridate so we can use lubridate's interval function when calculating season weeks
+library(lubridate)
+library(forecast)
+library(baseballr)
+library(zoo)
+pacman::p_load_current_gh("BillPetti/baseballr")
+
+
+```
+
+```{r FINAL PROJECT}
+
+#### BaseballR Version 1.5.0 Update ####
+csv_from_url <- function(...){
+  data.table::fread(...)
+}
+
+is_installed <- function(pkg) requireNamespace(pkg, quietly = TRUE)
+
+progressively <- function(f, p = NULL){
+  if(!is.null(p) && !inherits(p, "progressor")) stop("`p` must be a progressor function!")
+  if(is.null(p)) p <- function(...) NULL
+  force(f)
+
+  function(...){
+    on.exit(p("loading..."))
+    f(...)
+  }
+
+}
+
+rbindlist_with_attrs <- function(dflist){
+
+  baseballr_timestamp <- attr(dflist[[length(dflist)]], "baseballr_timestamp")
+  baseballr_type <- attr(dflist[[length(dflist)]], "baseballr_type")
+  out <- data.table::rbindlist(dflist, use.names = TRUE, fill = TRUE)
+  attr(out,"baseballr_timestamp") <- baseballr_timestamp
+  attr(out,"baseballr_type") <- baseballr_type
+  out
+}
+
+make_baseballr_data <- function(df,type,timestamp){
+  out <- df %>%
+    tidyr::as_tibble()
+
+  class(out) <- c("baseballr_data","tbl_df","tbl","data.table","data.frame")
+  attr(out,"baseballr_timestamp") <- timestamp
+  attr(out,"baseballr_type") <- type
+  return(out)
+}
+#
+process_player_name <- function(last_name = NULL, first_name = NULL, chadwick_player_lu_table = NULL) {
+  if (is.null(chadwick_player_lu_table)) {
+    chadwick_player_lu_table <- chadwick_player_lu()
+  }
+  if (is.null(first_name)) {
+    x <- chadwick_player_lu_table %>%
+      dplyr::filter(grepl(last_name, .data$name_last)) %>%
+      dplyr::select("name_first", "name_last", "name_given", "name_suffix",
+                    "name_nick", "birth_year", "mlb_played_first", "key_mlbam",
+                    "key_retro", "key_bbref", "key_fangraphs")
+  }
+  else {
+    x <- chadwick_player_lu_table %>%
+      dplyr::filter(grepl(last_name, .data$name_last)) %>%
+      dplyr::filter(grepl(first_name, .data$name_first)) %>%
+      dplyr::select("name_first", "name_last", "name_given", "name_suffix",
+                    "name_nick", "birth_year", "mlb_played_first",
+                    "key_mlbam", "key_retro", "key_bbref", "key_fangraphs")
+  }
+  return(x)
+}
+
+playerid_lookup = function (last_name = NULL, first_name = NULL) {
+  if (!exists("chadwick_player_lu_table")) {
+    chadwick_player_lu_table <- chadwick_player_lu()
+    x <- process_player_name(last_name, first_name, chadwick_player_lu_table)
+    names(x) <- c("first_name", "last_name", "given_name",
+                  "name_suffix", "nick_name", "birth_year", "mlb_played_first",
+                  "mlbam_id", "retrosheet_id", "bbref_id", "fangraphs_id")
+    x <- x %>% make_baseballr_data("Player ID Lookup from the Chadwick Bureau's public register of baseball players",
+                                   Sys.time())
+    return(x)
+  }
+  else {
+    x <- process_player_name(last_name, first_name, chadwick_player_lu_table)
+    names(x) <- c("first_name", "last_name", "given_name",
+                  "name_suffix", "nick_name", "birth_year", "mlb_played_first",
+                  "mlbam_id", "retrosheet_id", "bbref_id", "fangraphs_id")
+    suppressWarnings(x$fangraphs_id <- x$fangraphs_id %>%
+                       as.character() %>% as.numeric())
+    suppressWarnings(x$birth_year <- x$birth_year %>% as.character() %>%
+                       as.numeric())
+    x <- x %>% make_baseballr_data("Player ID Lookup from the Chadwick Bureau's public register of baseball players",
+                                   Sys.time())
+    return(x)
+  }
+}
+
+chadwick_player_lu <- function() {
+  old <- options(list(stringsAsFactors = FALSE, scipen = 999))
+  on.exit(options(old))
+  
+  loader <- csv_from_url
+  
+  hex_seq <- c(0:9, letters[1:6])
+  suppressWarnings(
+    urls <- paste0("https://raw.githubusercontent.com/chadwickbureau/register/master/data/people-", hex_seq,".csv")
+  )
+  p <- NULL
+  if (is_installed("progressr")) p <- progressr::progressor(along = hex_seq)
+  
+  df <- lapply(urls, progressively(loader, p))
+  df <- rbindlist_with_attrs(df)
+  class(df) <- c("baseballr_data","tbl_df","tbl","data.table","data.frame")
+  
+  
+  df <- df %>%
+    make_baseballr_data("Player Lookup from the Chadwick Bureau's public register of baseball players",Sys.time())
+  return(df)
+}
+
+#### My functions ####
+
+make_empty_df = function(columns){
+  empty_df = data.frame(matrix(nrow = 0, ncol = length(columns))) 
+  colnames(empty_df) = columns
+  return(empty_df)
+}
+
+get_weeks_in_season = function(seasons){
+  # Get season data (year, start date, end date)
+  season_data = mlb_seasons_all() %>% filter(season_id %in% seasons) %>% subset(select=c(season_id, regular_season_start_date, regular_season_end_date))
+  
+  # Create Result Dataframe
+  season_weeks = make_empty_df(c("season_week", "season_id", "week_id", "week_start_date", "week_end_date"))
+  
+  # Cycle through each year to collect all the weeks between season start and end date
+  for (i in 1:nrow(season_data)) {
+    week_id = 1
+    season_id = season_data$season_id[i]
+    week_start = floor_date(date(season_data$regular_season_start_date[i]), unit = 'week')
+    season_end = ceiling_date(date(season_data$regular_season_end_date[i]), unit = 'week')
+    
+    # For each week, save the ids and start/end dates for each week
+    while (week_start < season_end) {
+      # create row in data frame
+      new_row = list(sprintf(ifelse(week_id >= 10, '%s%i', '%s0%i'), season_id, week_id), season_id, week_id,
+                     format(week_start, '%Y-%m-%d'), format(week_start + days(6), '%Y-%m-%d'))
+      season_weeks[nrow(season_weeks) + 1,] = new_row
+      
+      # Cycle to next week
+      week_id = week_id + 1
+      week_start = week_start + days(7)
+    }
+  }
+  
+  return(season_weeks)
+}
+
+identify_week = function(my_date){
+  my_date = date(my_date)
+  season = my_date %>% year()
+  week_data = get_weeks_in_season(c(season)) %>%
+    filter(my_date %within% interval(week_start_date, week_end_date))
+  if (nrow(week_data) > 0) {
+    return(week_data$week_id)
+  } else {
+    print('Week Not Found. Could this date be during the offseason?')
+  }
+}
+
+build_bref_data = function(seasons, columns=NA, on_error='Fail'){
+  if (anyNA(columns)){
+    columns = c('bbref_id', 'season', 'Name', 'Age', 'Level', 'Team',
+                'G', 'PA', 'AB', 'R', 'H', 'X1B', 'X2B', 'X3B', 'HR',
+                'RBI', 'BB', 'IBB', 'uBB', 'SO', 'HBP', 'SH', 'SF', 'GDP', 'SB', 'CS')
+  }
+  season_weeks = get_weeks_in_season(seasons)
+  result_df = make_empty_df(columns)
+  
+  # Progress Bar Updates
+  n_weeks = nrow(season_weeks)
+  checkpoint = floor(n_weeks / 10)
+  print(paste("Pulling Data for: ", n_weeks, " weeks"))
+  
+  for (i in 1:nrow(season_weeks)){
+    Sys.sleep(10)  # This should prevent us from getting a temp ban from Baseball Reference
+    week_start = season_weeks$week_start_date[i]
+    week_end = season_weeks$week_end_date[i]
+    
+    if(i %% checkpoint == 0){
+      print(paste("Completed ", i, " weeks so far"))
+    }
+    
+    # If data pull fails, will return the 'df' function from base R stats package. If this happens, wait 10 seconds and try again.
+    flag = TRUE
+    retry_count = 1
+    while(flag){
+      closeAllConnections()
+      temp_data = bref_daily_batter(week_start, week_end)
+      
+      if (length(temp_data) == 1){
+        if (retry_count > 3){
+          break
+        }
+        retry_count = retry_count + 1
+        Sys.sleep(30)
+        next 
+      }
+    }
+    
+    # After 3 failed attempts, default is to skip that week, but can pass in option to fail function silently and return previous results.
+    if(retry_count > 3){
+      if (on_error == 'Skip') {
+        print(paste("Failed execution for ", week_start, " to ", week_end, ". Skipping to next Week"))
+        next
+      } else {
+        print(paste("Failed execution for ", week_start, " to ", week_end, ". Returning Results of Prior Weeks"))
+        return(result_df)
+      }
+    }
+    
+    # Do the rest of the stuff for normal results
+    temp_data$week_id = season_weeks$week_id[i]
+    if(!anyNA(columns)){
+      temp_data = subset(temp_data, TRUE, select = columns)
+    }
+    result_df = rbind(result_df, temp_data)
+  }
+  
+  return(result_df)
+}
+
+build_fg_data = function(player_frame, seasons){
+  # Pull fangraph ids
+  chadwich = chadwick_player_lu() %>%
+    filter(!is.na(key_fangraphs) & name_last %in% player_frame$name_last) %>%
+    subset(select = c('name_first', 'name_last', 'key_fangraphs', 'mlb_played_first', 'mlb_played_last'))
+  
+  final_cols = c('PlayerName', 'season', 'week', 'G', 'AB', 'PA', 'H',
+                 '1B', '2B','3B', 'HR', 'R', 'RBI', 'BB', 'IBB', 'SO', 'HBP',
+                 'GDP', 'SF', 'SH', 'SB', 'CS')
+  full_data = make_empty_df(final_cols)
+  
+  # For Each ID:
+  for(s in seasons){
+    # Get week ids
+    week_data = get_weeks_in_season(c(s))
+    
+    for(i in 1:nrow(player_frame)){
+      #   Find Player ID
+      player = chadwich %>% filter(name_last == player_frame$name_last[i] & name_first == player_frame$name_first[i])
+      if(nrow(player) == 0){
+        print(paste('Invalid Player Found: ', player_frame$name_last[i], ', ', player_frame$name_first[i]))
+        next
+      } else if(nrow(player) == 1){
+        fg_id = player$key_fangraphs[1]
+      } else {
+        # If multiple, check data played in MLB and grab the first valid name (with warning)
+        player = player %>% filter(mlb_played_first >= s & mlb_played_last <= s)
+        if(nrow(player) > 1){
+          print(paste('WARNING: Multiple Players Found: ', player_frame$name_last[i], ', ', player_frame$name_first[i], ' in ', s))
+        }
+        fg_id = player$key_fangraphs[1]
+      }
+      
+      # Pull Game data and assign a week id
+      tryCatch({
+        player_data = fg_batter_game_logs(fg_id, s)
+      }, error = function(e){
+        player_data = data.frame()
+      }, finally = {
+        if(nrow(player_data) == 0){
+          print(paste('Failed Retrieving Data: ', player_frame$name_last[i], ', ', player_frame$name_first[i], ' in ', s))
+          next
+        }
+      })
+      
+      player_data = mutate(player_data, week = lapply(player_data$Date, 'identify_week')) %>%
+        subset(select = final_cols) %>% group_by(PlayerName, season, week) %>%
+        summarise(across(everything(), sum), .groups = 'keep')
+      player_data$week = unlist(player_data$week)
+      full_data = rbind(full_data, player_data)
+    }
+  }
+  return(full_data)
+}
+
+```
+
+```{R FINAL PROJECT}
+#full_data = build_bref_data(seasons = c(2021), columns = c('season', 'week_id', 'Name', 'PA', 'R', 'H', 'HR', 'RBI', 'BB'))
+
+#full_data_test <- read.csv("test_final_project.csv", header=TRUE)
+#View(full_data_test)
+#full_data = subset(full_data_test, select=c('Date','PA','R','H','X2B','X3B','HR','RBI','BB'))
+#View(full_data)
+```
+
+```{R FINAL PROJECT}
+player_frame = data.frame(name_first=c('Barry', 'Todd', 'Aaron', 'Mike'), name_last=c('Bonds', 'Linden', 'Judge', 'Trout'))
+
+full_data = build_fg_data(player_frame = player_frame, seasons = c(2005, 2017))
+
+head(full_data)
+
+```
+```{R FINAL PROJECT}
+player_frame2 = data.frame(name_first=c('Mookie', 'Xander', 'Aaron', 'Carlos'), name_last=c('Betts', 'Bogaerts', 'Judge', 'Correa'))
+
+full_data2 = build_fg_data(player_frame = player_frame2, seasons = c(2021, 2022))
+
+head(full_data2)
+```
+```{R FINAL PROJECT}
+View(full_data2)
+```
+
+```{R FINAL PROJECT}
+t1 = "2022-04-04"
+t2 = "2022-04-10"
+paste0("http://www.baseball-reference.com/leagues/daily.cgi?user_team=&bust_cache=&type=b&lastndays=7&dates=fromandto&fromandto=", t1, ".", t2, "&level=mlb&franch=&stat=&stat_value=0")
+```
+
+```{R FINAL PROJECT}
+#Look at the data
+#View(full_data) - only use for testing
+full_datatest<-full_data %>%
+  filter(week > 20) %>%
+  select(PlayerName, season, week, PA, AB, '1B', '2B', '3B', HR, BB, IBB, SF, HBP) %>%
+  head()
+View(full_datatest)
+str(full_datatest)
+
+#Change column names for analysis
+colnames(full_datatest)[6]<-"B1"
+colnames(full_datatest)[7]<-"B2"
+colnames(full_datatest)[8]<-"B3"
+
+#Add wOBA to test dataset
+full_datatest$wOBA <- with(full_datatest,((0.69*full_datatest$BB)+(0.89*full_datatest$B1)+(1.27*full_datatest$B2)+(1.62*full_datatest$B3)+(2.10*full_datatest$HR))/(full_datatest$AB+full_datatest$BB-full_datatest$IBB+full_datatest$SF+full_datatest$HBP))
+```
+
+```{R FINAL PROJECT}
+#Look at the data
+#View(full_data) - only use for testing
+full_datatest2<-full_data2 %>%
+  filter(PlayerName == "Mookie Betts") %>%
+  select(PlayerName, season, week, PA, AB, '1B', '2B', '3B', HR, BB, IBB, SF, HBP) 
+
+#Change column names for analysis
+colnames(full_datatest2)[6]<-"B1"
+colnames(full_datatest2)[7]<-"B2"
+colnames(full_datatest2)[8]<-"B3"
+
+#Add wOBA to test dataset
+full_datatest2$wOBA <- with(full_datatest2,((0.69*full_datatest2$BB)+(0.89*full_datatest2$B1)+(1.27*full_datatest2$B2)+(1.62*full_datatest2$B3)+(2.10*full_datatest2$HR))/(full_datatest2$AB+full_datatest2$BB-full_datatest2$IBB+full_datatest2$SF+full_datatest2$HBP))
+
+#See final test dataset
+View(full_datatest2)
+str(full_datatest2)
+```
+
+
+```{R FINAL PROJECT}
+#Define wOBA
+#full_data$X1B <- with(full_data, #(full_data$H-full_data$X2B-full_data$X3B-full_data$HR))
+#full_data$wOBA <- with(full_data,((0.69*full_data$BB)+(0.89*full_data$X1B)+(1.#27*full_data$X2B)+(1.62*full_data$X3B)+(2.10*full_data$HR))/(full_data$PA))
+#View(full_data)
+```
+
+```{R FINAL PROJECT}
+tsdata<-ts(full_datatest, frequency=3)
+ddata<-decompose(tsdata,"multiplicative")
+ddata
+```
+
+```{R FINAL PROJECT}
+tsdata2<-ts(full_datatest2, frequency=3)
+ddata2<-decompose(tsdata2,"multiplicative")
+ddata2
+
+```
+
+```{R FINAL PROJECT}
+#modify dataframe for wOBA and date
+full_datatest_ts <- select(full_datatest, season, week, wOBA)
+View(full_datatest_ts)
+str(full_datatest_ts)
+full_datatest_ts2 <- ts(full_datatest_ts$wOBA, start=c(2005,1),frequency=52)
+full_datatest_ts2
+str(full_datatest_ts2)
+#Build model
+mymodel<-auto.arima(full_datatest_ts2)
+mymodel
+#Build forecast
+myforecast<-forecast(mymodel, level=c(95),h=1*3)
+plot(myforecast)
+
+```
+
+```{R FINAL PROJECT}
+#modify dataframe for wOBA and date
+full_datatest2_ts <- select(full_datatest2, season, week, wOBA)
+View(full_datatest2_ts)
+str(full_datatest2_ts)
+full_datatest2_ts2 <- ts(full_datatest2_ts$wOBA, start=c(2021,1),frequency=26)
+full_datatest2_ts2
+str(full_datatest2_ts2)
+#Build model
+mymodel2<-auto.arima(full_datatest2_ts2)
+mymodel2
+#Build forecast
+myforecast2<-forecast(mymodel2, level=c(95),h=1*3)
+plot(myforecast2)
+```
+
+
+```{R FINAL PROJECT}
+#Validate the model 
+#Inspired by https://www.simplilearn.com/tutorials/data-science-tutorial/time-series-forecasting-in-r
+
+Box.test(mymodel$resid, lag=5, type = "Ljung-Box")
+Box.test(mymodel2$resid, lag=10, type="Ljung-Box")
+Box.test(mymodel2$resid, lag=15, type="Ljung-Box")
+
+```
+
+```{R FINAL PROJECT}
+#Build predictor to test model accuracy
+full_datatestgroup<-full_datatest2 %>%
+  filter(week < 20 | season < max(season))
+#Convert to time series
+full_datatestgroupts <- ts(full_datatestgroup$wOBA, start=c(2021,1),frequency=26)
+#Run new dataset through arima model  
+mymodelgroup<-auto.arima(full_datatestgroupts)
+mymodelgroup
+#Build forecast
+myforecastgroup<-forecast(mymodelgroup, level=c(95),h=1*3, bootstrap = FALSE)
+plot(myforecastgroup)
+```
+```{R FINAL PROJECT}
+full_datatest2 %>%
+  filter(week >= 20 & season >= max(season)) %>%
+  head()
+```
+
+```{R FINAL PROJECT}
+#Validate the model 
+#Inspired by https://www.simplilearn.com/tutorials/data-science-tutorial/time-series-forecasting-in-r
+
+Box.test(mymodel2$resid, lag=5, type = "Ljung-Box")
+Box.test(mymodel$resid, lag=10, type="Ljung-Box")
+Box.test(mymodel$resid, lag=15, type="Ljung-Box")
+```
+
+
+```{R FINAL PROJECT}
+# Main Function
+forecast_player = function(last_name, first_name, season, prediction_week,
+                           n_prev_year=ifelse(prediction_week < 10, 1, 0),
+                           arima_order=NA){
+  # Get Player Data
+  if(n_prev_year != 0){
+    season_vec = c((season-n_prev_year):season)
+  } else {
+    season_vec = c(season)
+  }
+  player_data = build_fg_data(data.frame(name_last=c(last_name), name_first=c(first_name)), seasons = season_vec) %>%
+    select(PlayerName, season, week, PA, AB, '1B', '2B', '3B', HR, BB, IBB, SF, HBP)
+
+  if(nrow(player_data) == 0){
+    stop(paste("Failed to pull data for: ", season, ' ', last_name, ', ', first_name))
+  }
+  
+  # Apply wOBA to Player Data
+  player_data$wOBA <- with(player_data,((0.69*player_data$BB)+(0.89*player_data$'1B')+(1.27*player_data$'2B')+(1.62*player_data$'3B')+(2.10*player_data$HR))/(player_data$AB+player_data$BB-player_data$IBB+player_data$SF+player_data$HBP))
+  
+  # Sort and subset
+  player_data = player_data[order(player_data$season, player_data$week), ] %>%
+    select(PlayerName, season, week, wOBA)
+  
+  # Split Train/Test Data
+  max_season = max(player_data$season)
+  train_data = filter(player_data, season < max_season | week < prediction_week)
+  test_data = filter(player_data, season == max_season & week >= prediction_week)
+  
+  # Forecast (And Analyze?)
+  time_series = ts(train_data$wOBA, start=c(min(season_vec),1),frequency=26)
+  if(anyNA(arima_order)){
+      model = auto.arima(time_series)
+  } else {
+    model = forecast::Arima(time_series, arima_order)
+  }
+  fc_obj = forecast(model, level=c(80),h=nrow(test_data), bootstrap=TRUE)
+  
+  return(list(
+    train_data = train_data,
+    test_data = test_data,
+    model = model,
+    forecast = fc_obj
+  ))
+}
+
+results = forecast_player("Betts", "Mookie", 2019, 20, n_prev_year = 0,
+                       arima_order=c(2, 0, 2))
+plot(results$forecast)
+results_frame = data.frame(
+  week = results$test_data$week,
+  pred_wOBA=results$forecast$mean,
+  actual_wOBA=results$test_data$wOBA)
+results_frame$err_pct = round(abs(results_frame$actual_wOBA - results_frame$pred_wOBA) / results_frame$actual_wOBA, 4)
+```
+
+
+```{R FINAL PROJECT}
+#data2_ts <- select(data2, season, wOBA)
+#View(data2_ts)
+#tseries<-read.zoo(data2_ts)
+```
