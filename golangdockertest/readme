@@ -1,0 +1,14 @@
+Instructions to create a golang docker web app (e.g., in AWS EC2)
+Connect to EC2 instance via SSH or PuTTy
+Type the following commands:
+ls
+mkdir (e.g., golangdockertest)
+vi hello.go (copy the code from repo)
+vi go.mod (copy the code from repo)
+vi Dockerfile (copy the code from repo)
+
+Make sure golang is intsalled
+
+sudo snap install docker
+sudo docker build -t [name of directory with code - e.g., golangdockertest] .
+suod docker run -p 8080:8080 -tid [name of directory with code - e.g., golangdockertest]
