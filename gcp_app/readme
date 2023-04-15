@@ -1,0 +1,10 @@
+Create a new project
+Enable APIs & Services (in the new project)
+
+git clone https://github.com/GoogleCloudPlatform/golang-samples
+
+cd golang-samples
+cd appengine
+cd go11x
+cd helloworld
+gcloud app deploy
