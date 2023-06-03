@@ -1,0 +1,44 @@
+#Google ML
+
+#standard sql
+CREATE MODEL `dandecoentest.sample02`
+OPTIONS(model_type = ‘logistic_reg’,
+		input_label_cols = [‘is_power’])
+AS
+SELECT
+IF(SLG > 0.500, 0, 1) AS is_power,
+NAME,
+TEAM,
+AGE
+FROM `table`
+WHERE AB > 150
+
+#evaluate model
+SELECT *
+FROM ML.EVALUATE(MODEL `dandecoentest.sample02`,
+	(
+		SELECT
+			IF(SLG > 0.500, 0, 1) AS is_power,
+			NAME,
+			TEAM,
+			AGE
+		FROM `table`
+		WHERE AB > 300
+	),
+STRUCT(0.5 AS threshold)
+)
+
+
+#predict model
+#standard sql
+SELECT *
+FROM ML.PREDICT(MODEL `dandecoentest.sample02`,
+	(
+		SELECT
+			NAME,
+			TEAM,
+			AGE
+		FROM `table`
+		WHERE AB > 300
+	)
+)
