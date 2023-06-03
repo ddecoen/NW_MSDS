@@ -1,3 +1,5 @@
+#Week 4 Google BigQuery Commands
+
 <create / allocate project and billing>
 <open cloud shell terminal>
 gcloud projects list
