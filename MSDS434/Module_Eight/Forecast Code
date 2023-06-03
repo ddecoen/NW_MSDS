@@ -1,0 +1,1 @@
+SELECT * FROM ML.FORECAST(MODEL `cloud-billing-finalproject.all_billing_data.usage_model`, STRUCT(30 as horizon, 0.75 AS confidence_level))
