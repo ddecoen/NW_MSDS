@@ -1,3 +1,5 @@
+#Week 2 - GCP App
+
 git clone https://github.com/GoogleCloudPlatform/python-docs-samples
 
 gcloud set config project
@@ -22,3 +24,11 @@ cd appengine
 cd go11x
 cd helloworld
 gcloud app deploy
+
+
+#AWS EC2 Detail
+cd Downloads
+chmod 400 "insert key pair"
+ssh -i "insert key pair" [Public IPv4 DNS]
+
+Go to connect then SSH client and copy info into terminal
