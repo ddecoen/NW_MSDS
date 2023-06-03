@@ -1,0 +1,38 @@
+#Create Dataset/Table for Analysis
+SELECT
+  EXTRACT (DATE FROM TIMESTAMP(usage_start_time)) AS start_date,
+  usage_start_time,
+  project.name,
+  sum(usage.amount) as total_usage
+FROM
+`cloud-billing-finalproject.all_billing_data.gcp_billing_export_v1_011579_BDBBB9_3535AB`
+WHERE
+   usage_start_time >= ('2023-03-01') 
+   AND project.name in ('finalprojectgcp','cloud-billing-finalproject')
+GROUP BY
+    usage_start_time, project.name, start_date
+
+#Models for Billing Analysis
+#Linear Regression
+
+CREATE OR REPLACE MODEL `cloud-billing-finalproject.all_billing_data.usage_model_linear`
+OPTIONS(model_type='linear_reg') AS
+SELECT
+    DATE_DIFF(DATE(usage_start_time), DATE '2023-05-19', DAY) AS day_number,
+    sum(usage.amount) as label
+FROM `cloud-billing-finalproject.all_billing_data.gcp_billing_export_v1_011579_BDBBB9_3535AB`
+GROUP BY day_number
+
+#ARIMA Model
+CREATE OR REPLACE MODEL `cloud-billing-finalproject.all_billing_data.usage_model`
+  OPTIONS(
+    MODEL_TYPE='ARIMA_PLUS',
+    TIME_SERIES_TIMESTAMP_COL='usage_start_time',
+    TIME_SERIES_DATA_COL='total_usage'
+  ) AS
+  SELECT
+    usage_start_time,
+    total_usage
+  FROM
+    `cloud-billing-finalproject.all_billing_data.training_data2`
+    
