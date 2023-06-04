@@ -11,3 +11,6 @@ sudo apt-get update
 
 sudo apt-get -y install apache2-utils
 ab -n 1000 -c 100 http://<Your_IP>/
+
+# Can also use GCP native monitoring (formerly known as Stackdriver)
+https://console.cloud.google.com/monitoring/dashboards/builder/b4489fb5-778f-4549-bab6-3db0d59e1e2e;duration=PT1H?project=finalprojectgcp-384519
